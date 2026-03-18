@@ -1,6 +1,7 @@
 /**
- * Admin commands for Telegram bot: /invite, /users, /block, /unblock
+ * Admin commands for Telegram bot: /invite, /users, /block, /unblock, /role
  * Owner notifications on new user pairing
+ * All user-facing messages in Russian
  */
 import type { Bot } from "grammy";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
@@ -26,15 +27,14 @@ export interface AdminCommandsParams {
 export function registerAdminCommands(params: AdminCommandsParams): void {
   const { bot, ownerUserId, accountId, botUsername } = params;
 
-  // Helper: check if sender is the owner
   function isOwner(ctx: { from?: { id: number } }): boolean {
     return ctx.from?.id != null && String(ctx.from.id) === ownerUserId;
   }
 
-  // /invite — generate a deep link for inviting users
+  // /invite — создать ссылку-приглашение
   bot.command("invite", async (ctx) => {
     if (!isOwner(ctx)) {
-      await ctx.reply("Only the owner can generate invite links.");
+      await ctx.reply("Только администратор может создавать ссылки-приглашения.");
       return;
     }
 
@@ -42,14 +42,14 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
     const link = `https://t.me/${botUsername}?start=invite_${inviteCode}`;
 
     await ctx.reply(
-      `Invite link (share with new user):\n\n${link}\n\nThe user will be auto-approved when they click this link.`,
+      `Ссылка-приглашение (отправьте новому пользователю):\n\n${link}\n\nПользователь будет автоматически одобрен при переходе по ссылке.`,
     );
   });
 
-  // /users — list all authorized users
+  // /users — список пользователей
   bot.command("users", async (ctx) => {
     if (!isOwner(ctx)) {
-      await ctx.reply("Only the owner can view the user list.");
+      await ctx.reply("Только администратор может просматривать список пользователей.");
       return;
     }
 
@@ -57,35 +57,35 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
       const entries = await readChannelAllowFromStore("telegram", process.env, accountId);
 
       if (!entries || entries.length === 0) {
-        await ctx.reply("No authorized users found (besides config allowFrom).");
+        await ctx.reply("Авторизованных пользователей не найдено.");
         return;
       }
 
       const userList = entries.map((id: string, i: number) => `${i + 1}. \`${id}\``).join("\n");
       await ctx.reply(
-        `Authorized users (${entries.length}):\n\n${userList}\n\nOwner: \`${ownerUserId}\``,
+        `Авторизованные пользователи (${entries.length}):\n\n${userList}\n\nАдмин: \`${ownerUserId}\``,
         { parse_mode: "Markdown" },
       );
     } catch {
-      await ctx.reply("Error reading user list.");
+      await ctx.reply("Ошибка при чтении списка пользователей.");
     }
   });
 
-  // /block <userId> — remove user from allowlist
+  // /block <userId> — заблокировать пользователя
   bot.command("block", async (ctx) => {
     if (!isOwner(ctx)) {
-      await ctx.reply("Only the owner can block users.");
+      await ctx.reply("Только администратор может блокировать пользователей.");
       return;
     }
 
     const userId = ctx.match?.trim();
     if (!userId) {
-      await ctx.reply("Usage: /block <user_id>\nExample: /block 123456789");
+      await ctx.reply("Использование: /block <user_id>\nПример: /block 123456789");
       return;
     }
 
     if (userId === ownerUserId) {
-      await ctx.reply("You cannot block yourself.");
+      await ctx.reply("Вы не можете заблокировать себя.");
       return;
     }
 
@@ -95,24 +95,24 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
         id: userId,
         accountId,
       });
-      await ctx.reply(`User \`${userId}\` has been blocked (removed from allowlist).`, {
+      await ctx.reply(`Пользователь \`${userId}\` заблокирован (удалён из списка доступа).`, {
         parse_mode: "Markdown",
       });
     } catch {
-      await ctx.reply(`Error blocking user ${userId}.`);
+      await ctx.reply(`Ошибка при блокировке пользователя ${userId}.`);
     }
   });
 
-  // /unblock <userId> — add user back to allowlist
+  // /unblock <userId> — разблокировать пользователя
   bot.command("unblock", async (ctx) => {
     if (!isOwner(ctx)) {
-      await ctx.reply("Only the owner can unblock users.");
+      await ctx.reply("Только администратор может разблокировать пользователей.");
       return;
     }
 
     const userId = ctx.match?.trim();
     if (!userId) {
-      await ctx.reply("Usage: /unblock <user_id>\nExample: /unblock 123456789");
+      await ctx.reply("Использование: /unblock <user_id>\nПример: /unblock 123456789");
       return;
     }
 
@@ -122,31 +122,30 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
         id: userId,
         accountId,
       });
-      await ctx.reply(`User \`${userId}\` has been unblocked (added to allowlist).`, {
+      await ctx.reply(`Пользователь \`${userId}\` разблокирован (добавлен в список доступа).`, {
         parse_mode: "Markdown",
       });
     } catch {
-      await ctx.reply(`Error unblocking user ${userId}.`);
+      await ctx.reply(`Ошибка при разблокировке пользователя ${userId}.`);
     }
   });
 
-  // /role — show the user their role
+  // /role — узнать свою роль
   bot.command("role", async (ctx) => {
     if (isOwner(ctx)) {
-      await ctx.reply("Your role: *Admin* (owner)\n\nYou can manage users, skills, and settings.", {
-        parse_mode: "Markdown",
-      });
+      await ctx.reply(
+        "Ваша роль: *Администратор*\n\nВы можете управлять пользователями, скиллами и настройками.",
+        { parse_mode: "Markdown" },
+      );
     } else {
       await ctx.reply(
-        "Your role: *User*\n\nYou can use all available skills and chat with the assistant. Skill management is admin-only.",
-        {
-          parse_mode: "Markdown",
-        },
+        "Ваша роль: *Пользователь*\n\nВы можете использовать все доступные скиллы и общаться с ассистентом. Управление скиллами доступно только администратору.",
+        { parse_mode: "Markdown" },
       );
     }
   });
 
-  // Handle /start with invite deep link parameter
+  // /start с invite deep link
   bot.command("start", async (ctx) => {
     const param = ctx.match?.trim();
 
@@ -168,32 +167,34 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
           accountId,
         });
 
-        await ctx.reply("Welcome! You have been approved. Send a message to start chatting.");
+        await ctx.reply(
+          "Добро пожаловать! Вы одобрены. Отправьте сообщение, чтобы начать общение.",
+        );
 
-        // Notify owner about the new user
+        // Уведомить админа о новом пользователе
         await notifyOwnerNewUser({
           bot,
           ownerUserId,
           userId: senderIdStr,
           displayName,
           username,
-          method: "invite link",
+          method: "ссылке-приглашению",
         });
       } catch {
-        await ctx.reply("Something went wrong. Please try again or contact the admin.");
+        await ctx.reply("Произошла ошибка. Попробуйте снова или свяжитесь с администратором.");
       }
       return;
     }
 
-    // Default /start handler
+    // Стандартный /start
     await ctx.reply(
-      "Hello! I'm your AI assistant powered by Claude.\n\nIf you don't have access yet, ask the admin for an invite link.",
+      "Привет! Я ваш AI-ассистент на базе Claude.\n\nЕсли у вас нет доступа, попросите администратора создать ссылку-приглашение.",
     );
   });
 }
 
 /**
- * Send notification to owner when a new user is approved (via pairing or invite).
+ * Уведомление админу о новом пользователе.
  */
 export async function notifyOwnerNewUser(params: {
   bot: Bot;
@@ -206,11 +207,11 @@ export async function notifyOwnerNewUser(params: {
   const { bot, ownerUserId, userId, displayName, username, method } = params;
   const usernameStr = username ? ` (@${username})` : "";
   const text = [
-    `New user registered via ${method}:`,
-    `Name: ${displayName}${usernameStr}`,
+    `Новый пользователь зарегистрирован по ${method}:`,
+    `Имя: ${displayName}${usernameStr}`,
     `ID: \`${userId}\``,
     ``,
-    `To block: /block ${userId}`,
+    `Заблокировать: /block ${userId}`,
   ].join("\n");
 
   try {
@@ -219,13 +220,12 @@ export async function notifyOwnerNewUser(params: {
       fn: () => bot.api.sendMessage(Number(ownerUserId), text, { parse_mode: "Markdown" }),
     });
   } catch {
-    // Owner notification is best-effort
+    // Best-effort notification
   }
 }
 
 /**
  * Check if a Telegram user ID is the owner/admin.
- * Exported for use in other modules to gate admin-only features (e.g., skill management).
  */
 export function isOwnerUser(userId: string | number, ownerUserId: string): boolean {
   return String(userId) === ownerUserId;
