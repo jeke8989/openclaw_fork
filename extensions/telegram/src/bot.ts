@@ -23,6 +23,7 @@ import { getChildLogger } from "openclaw/plugin-sdk/runtime-env";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { createNonExitingRuntime, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { resolveTelegramAccount } from "./accounts.js";
+import { registerAdminCommands } from "./admin-commands.js";
 import { defaultTelegramBotDeps, type TelegramBotDeps } from "./bot-deps.js";
 import { registerTelegramHandlers } from "./bot-handlers.js";
 import { createTelegramMessageProcessor } from "./bot-message.js";
@@ -492,6 +493,22 @@ export function createTelegramBot(opts: TelegramBotOptions) {
     opts,
     telegramDeps,
   });
+
+  // Register admin commands (invite, users, block, unblock) before native commands
+  // Owner is the first entry in allowFrom config
+  const configAllowFrom = telegramCfg.allowFrom ?? [];
+  const adminOwnerId =
+    configAllowFrom.length > 0 ? String(configAllowFrom[0]).replace(/^(telegram|tg):/i, "") : "";
+  if (adminOwnerId) {
+    const botUsername = bot.botInfo?.username ?? "";
+    registerAdminCommands({
+      bot,
+      cfg,
+      ownerUserId: adminOwnerId,
+      accountId: account.accountId,
+      botUsername,
+    });
+  }
 
   registerTelegramNativeCommands({
     bot,
