@@ -39,7 +39,8 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
     }
 
     const inviteCode = generateInviteCode();
-    const link = `https://t.me/${botUsername}?start=invite_${inviteCode}`;
+    const resolvedBotUsername = botUsername || ctx.me?.username || "";
+    const link = `https://t.me/${resolvedBotUsername}?start=invite_${inviteCode}`;
 
     await ctx.reply(
       `Ссылка-приглашение (отправьте новому пользователю):\n\n${link}\n\nПользователь будет автоматически одобрен при переходе по ссылке.`,
@@ -145,51 +146,38 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
     }
   });
 
-  // /start с invite deep link
-  bot.command("start", async (ctx) => {
-    const param = ctx.match?.trim();
+  // Handle /start with invite deep link — use hears to avoid conflicting with grammy internals
+  bot.hears(/^\/start\s+invite_\w+/, async (ctx) => {
+    const senderId = ctx.from?.id;
+    if (!senderId) return;
 
-    if (param && param.startsWith("invite_")) {
-      const senderId = ctx.from?.id;
-      if (!senderId) return;
+    const senderIdStr = String(senderId);
+    const firstName = ctx.from?.first_name ?? "";
+    const lastName = ctx.from?.last_name ?? "";
+    const username = ctx.from?.username ?? "";
+    const displayName = [firstName, lastName].filter(Boolean).join(" ") || username || senderIdStr;
 
-      const senderIdStr = String(senderId);
-      const firstName = ctx.from?.first_name ?? "";
-      const lastName = ctx.from?.last_name ?? "";
-      const username = ctx.from?.username ?? "";
-      const displayName =
-        [firstName, lastName].filter(Boolean).join(" ") || username || senderIdStr;
+    try {
+      await addChannelAllowFromStoreEntry({
+        channel: "telegram",
+        id: senderIdStr,
+        accountId,
+      });
 
-      try {
-        await addChannelAllowFromStoreEntry({
-          channel: "telegram",
-          id: senderIdStr,
-          accountId,
-        });
+      await ctx.reply("Добро пожаловать! Вы одобрены. Отправьте сообщение, чтобы начать общение.");
 
-        await ctx.reply(
-          "Добро пожаловать! Вы одобрены. Отправьте сообщение, чтобы начать общение.",
-        );
-
-        // Уведомить админа о новом пользователе
-        await notifyOwnerNewUser({
-          bot,
-          ownerUserId,
-          userId: senderIdStr,
-          displayName,
-          username,
-          method: "ссылке-приглашению",
-        });
-      } catch {
-        await ctx.reply("Произошла ошибка. Попробуйте снова или свяжитесь с администратором.");
-      }
-      return;
+      // Уведомить админа о новом пользователе
+      await notifyOwnerNewUser({
+        bot,
+        ownerUserId,
+        userId: senderIdStr,
+        displayName,
+        username,
+        method: "ссылке-приглашению",
+      });
+    } catch {
+      await ctx.reply("Произошла ошибка. Попробуйте снова или свяжитесь с администратором.");
     }
-
-    // Стандартный /start
-    await ctx.reply(
-      "Привет! Я ваш AI-ассистент на базе Claude.\n\nЕсли у вас нет доступа, попросите администратора создать ссылку-приглашение.",
-    );
   });
 }
 

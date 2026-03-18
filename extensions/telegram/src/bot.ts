@@ -500,13 +500,13 @@ export function createTelegramBot(opts: TelegramBotOptions) {
   const adminOwnerId =
     configAllowFrom.length > 0 ? String(configAllowFrom[0]).replace(/^(telegram|tg):/i, "") : "";
   if (adminOwnerId) {
-    const botUsername = bot.botInfo?.username ?? "";
+    // bot.botInfo may not be available yet; pass empty and resolve lazily via ctx.me
     registerAdminCommands({
       bot,
       cfg,
       ownerUserId: adminOwnerId,
       accountId: account.accountId,
-      botUsername,
+      botUsername: "",
     });
   }
 
