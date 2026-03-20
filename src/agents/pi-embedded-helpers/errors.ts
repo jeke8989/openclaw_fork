@@ -752,6 +752,14 @@ export function formatAssistantErrorText(
     return formatBillingErrorMessage(opts?.provider, opts?.model ?? msg.model);
   }
 
+  if (isAuthPermanentErrorMessage(raw)) {
+    return "⚠️ API authentication failed — your API key has been revoked, disabled, or is not allowed for this organization. Check your API key and organization settings, or switch to a different API key.";
+  }
+
+  if (isAuthErrorMessage(raw)) {
+    return "⚠️ API authentication failed — your API key or token is invalid or has expired. Please update your API key and try again.";
+  }
+
   if (isLikelyHttpErrorText(raw) || isRawApiErrorPayload(raw)) {
     return formatRawAssistantErrorForUi(raw);
   }
@@ -793,6 +801,14 @@ export function sanitizeUserFacingText(text: string, opts?: { errorContext?: boo
 
     if (isBillingErrorMessage(trimmed)) {
       return BILLING_ERROR_USER_MESSAGE;
+    }
+
+    if (isAuthPermanentErrorMessage(trimmed)) {
+      return "⚠️ API authentication failed — your API key has been revoked, disabled, or is not allowed for this organization. Check your API key and organization settings, or switch to a different API key.";
+    }
+
+    if (isAuthErrorMessage(trimmed)) {
+      return "⚠️ API authentication failed — your API key or token is invalid or has expired. Please update your API key and try again.";
     }
 
     if (isRawApiErrorPayload(trimmed) || isLikelyHttpErrorText(trimmed)) {
