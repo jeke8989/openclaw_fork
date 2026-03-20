@@ -123,6 +123,30 @@ describe("formatAssistantErrorText", () => {
     const msg = makeAssistantError("request ended without sending any chunks");
     expect(formatAssistantErrorText(msg)).toBe("LLM request timed out.");
   });
+
+  it("returns a friendly message for OAuth permission_error (auth_permanent)", () => {
+    const msg = makeAssistantError(
+      "HTTP 403 permission_error: OAuth authentication is currently not allowed for this organization. (request_id: req_011CZD9xqCEKxid26qACeZHA)",
+    );
+    const result = formatAssistantErrorText(msg);
+    expect(result).toContain("API authentication failed");
+    expect(result).toContain("/setkey");
+    expect(result).not.toContain("request_id");
+  });
+
+  it("returns a friendly message for revoked API key errors (auth_permanent)", () => {
+    const msg = makeAssistantError("Your API key has been revoked.");
+    const result = formatAssistantErrorText(msg);
+    expect(result).toContain("API authentication failed");
+    expect(result).toContain("/setkey");
+  });
+
+  it("returns a friendly message for generic auth errors", () => {
+    const msg = makeAssistantError("401 Unauthorized: invalid token");
+    const result = formatAssistantErrorText(msg);
+    expect(result).toContain("API authentication failed");
+    expect(result).toContain("/setkey");
+  });
 });
 
 describe("formatRawAssistantErrorForUi", () => {

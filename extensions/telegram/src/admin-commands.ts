@@ -1,5 +1,5 @@
 /**
- * Admin commands for Telegram bot: /invite, /users, /block, /unblock, /role
+ * Admin commands for Telegram bot: /invite, /users, /block, /unblock, /role, /setkey
  * Owner notifications on new user pairing
  * All user-facing messages in Russian
  */
@@ -10,6 +10,14 @@ import {
   addChannelAllowFromStoreEntry,
   removeChannelAllowFromStoreEntry,
 } from "../../../src/pairing/pairing-store.js";
+import {
+  setAnthropicApiKey,
+  setOpenaiApiKey,
+  setGeminiApiKey,
+  setOpenrouterApiKey,
+  setMistralApiKey,
+  setXaiApiKey,
+} from "../../../src/plugins/provider-auth-storage.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 
 export interface AdminCommandsParams {
@@ -146,6 +154,63 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
     }
   });
 
+  // /setkey <provider> <key> — обновить API-ключ провайдера
+  bot.command("setkey", async (ctx) => {
+    if (!isOwner(ctx)) {
+      await ctx.reply("Только администратор может менять API-ключи.");
+      return;
+    }
+
+    // Immediately delete the message containing the API key for security
+    try {
+      await ctx.deleteMessage();
+    } catch {
+      // May fail if bot lacks delete permissions — continue anyway
+    }
+
+    const input = ctx.match?.trim();
+    if (!input) {
+      const supported = Object.keys(PROVIDER_KEY_SETTERS).join(", ");
+      await ctx.reply(
+        `Использование: /setkey <провайдер> <ключ>\n\nПоддерживаемые провайдеры: ${supported}\n\nПример: /setkey openai sk-xxxxxxxx\n\n⚠️ Сообщение с ключом будет автоматически удалено.`,
+      );
+      return;
+    }
+
+    const spaceIdx = input.indexOf(" ");
+    if (spaceIdx === -1) {
+      await ctx.reply("Укажите провайдер и ключ через пробел.\nПример: /setkey openai sk-xxxxxxxx");
+      return;
+    }
+
+    const providerName = input.slice(0, spaceIdx).toLowerCase();
+    const apiKey = input.slice(spaceIdx + 1).trim();
+
+    if (!apiKey) {
+      await ctx.reply("API-ключ не может быть пустым.");
+      return;
+    }
+
+    const setter = PROVIDER_KEY_SETTERS[providerName];
+    if (!setter) {
+      const supported = Object.keys(PROVIDER_KEY_SETTERS).join(", ");
+      await ctx.reply(
+        `Неизвестный провайдер: "${providerName}"\n\nПоддерживаемые провайдеры: ${supported}`,
+      );
+      return;
+    }
+
+    try {
+      await setter(apiKey);
+      await ctx.reply(`✅ API-ключ для *${providerName}* успешно обновлён.`, {
+        parse_mode: "Markdown",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`❌ Ошибка при обновлении ключа: ${message}`);
+    }
+  });
+
   // Handle /start with invite deep link — use hears to avoid conflicting with grammy internals
   bot.hears(/^\/start\s+invite_\w+/, async (ctx) => {
     const senderId = ctx.from?.id;
@@ -218,6 +283,17 @@ export async function notifyOwnerNewUser(params: {
 export function isOwnerUser(userId: string | number, ownerUserId: string): boolean {
   return String(userId) === ownerUserId;
 }
+
+/** Map of supported provider names to their key-setter functions. */
+const PROVIDER_KEY_SETTERS: Record<string, (key: string) => void | Promise<void>> = {
+  anthropic: (key) => setAnthropicApiKey(key),
+  openai: (key) => setOpenaiApiKey(key),
+  gemini: (key) => setGeminiApiKey(key),
+  google: (key) => setGeminiApiKey(key),
+  openrouter: (key) => setOpenrouterApiKey(key),
+  mistral: (key) => setMistralApiKey(key),
+  xai: (key) => setXaiApiKey(key),
+};
 
 function generateInviteCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
