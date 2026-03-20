@@ -1,12 +1,13 @@
-# OpenClaw Telegram Bot (OpenRouter)
+# OpenClaw Telegram Bot
 
-Быстрый деплой AI-бота в Telegram через OpenRouter. Один скрипт, 3 параметра, Docker.
+Быстрый деплой AI-бота в Telegram. Anthropic (подписка) + OpenRouter (fallback). Один скрипт, 4 параметра, Docker.
 
 ## Что нужно
 
 - Сервер с Docker и Docker Compose
 - Telegram бот (создать у [@BotFather](https://t.me/BotFather))
-- API ключ [OpenRouter](https://openrouter.ai/keys)
+- Подписка Claude Pro ($20) или Max ($200) — получить setup-token: `claude setup-token`
+- API ключ [OpenRouter](https://openrouter.ai/keys) — fallback
 - Твой Telegram ID (узнать у [@userinfobot](https://t.me/userinfobot))
 
 ## Быстрый старт
@@ -17,70 +18,63 @@ cd <REPO_NAME>/deploy/openrouter-telegram
 ./setup.sh
 ```
 
-Скрипт спросит 3 значения и запустит бота.
+Скрипт спросит 4 значения и запустит бота.
 
 ## Ручная установка
 
 ```bash
 cp .env.example .env
-# Заполни .env своими значениями
 nano .env
-
 docker compose up -d --build
+```
+
+## Архитектура
+
+```
+Anthropic (Claude подписка)  ← основная модель
+         ↓ fallback
+OpenRouter (minimax-m2.5)    ← если Anthropic недоступен
 ```
 
 ## Управление
 
 ```bash
-# Логи
-docker compose logs -f
-
-# Перезапуск
-docker compose restart
-
-# Остановка
-docker compose down
-
-# Статус
-docker compose ps
+docker compose logs -f       # Логи
+docker compose restart       # Перезапуск
+docker compose down          # Остановка
+docker compose ps            # Статус
 ```
+
+## Команды бота (в Telegram)
+
+| Команда | Описание |
+|---------|----------|
+| `/reauth` | Обновить Anthropic токен (запусти `claude setup-token` и вставь) |
+| `/setmodel anthropic/claude-opus-4-6` | Сменить модель без рестарта |
+| `/invite` | Создать ссылку-приглашение |
+| `/users` | Список пользователей |
+| `/block` / `/unblock` | Управление пользователями |
+| `/status` | Статус бота, модель, токены |
 
 ## Как работает
 
-- Новые пользователи пишут `/start` боту
-- Админ получает уведомление и может одобрить/отклонить (dmPolicy: pairing)
-- Каждый пользователь имеет изолированную сессию
-- Модель по умолчанию: `minimax/minimax-m2.5` через OpenRouter
+- **Primary:** Anthropic через setup-token от подписки Claude Pro/Max
+- **Fallback:** OpenRouter если Anthropic недоступен
+- Новые пользователи: `/start` → админ одобряет
+- Изолированные сессии для каждого пользователя
 
 ## Смена модели
 
-Отредактируй `data/openclaw.json`, поле `agents.defaults.model.primary`:
-
 ```
-openrouter/minimax/minimax-m2.5           # MiniMax M2.5 (default)
-openrouter/anthropic/claude-sonnet-4-6    # Claude Sonnet
-openrouter/anthropic/claude-opus-4-6      # Claude Opus
-openrouter/google/gemini-2.5-pro          # Gemini Pro
-openrouter/openai/gpt-4o                  # GPT-4o
+/setmodel anthropic/claude-sonnet-4-6    # Claude Sonnet (default)
+/setmodel anthropic/claude-opus-4-6      # Claude Opus
+/setmodel openrouter/google/gemini-2.5-pro  # Gemini через OpenRouter
+/setmodel openrouter/openai/gpt-4o         # GPT-4o через OpenRouter
 ```
 
-Или отправь боту команду:
+## Обновление токена
 
-```
-/model anthropic/claude-sonnet-4-6
-```
-
-Модель переключится **без рестарта** — следующее сообщение уже пойдёт через новую модель.
-
-После ручной смены в файле: `docker compose restart`
-
-## Настройка бота
-
-Имя и поведение бота: `data/openclaw.json` → `agents.list[0].identity`
-
-```json
-{
-  "name": "MyBot",
-  "theme": "Ты полезный AI-ассистент. Отвечай на русском."
-}
-```
+Если токен протух — пишешь боту `/reauth`:
+1. Бот просит: запусти `claude setup-token` на любом устройстве
+2. Вставляешь токен в чат
+3. Бот применяет — работает
