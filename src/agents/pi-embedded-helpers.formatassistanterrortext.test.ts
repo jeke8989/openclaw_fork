@@ -130,7 +130,7 @@ describe("formatAssistantErrorText", () => {
     );
     const result = formatAssistantErrorText(msg);
     expect(result).toContain("API authentication failed");
-    expect(result).toContain("not allowed for this organization");
+    expect(result).toContain("/setkey");
     expect(result).not.toContain("request_id");
   });
 
@@ -138,14 +138,14 @@ describe("formatAssistantErrorText", () => {
     const msg = makeAssistantError("Your API key has been revoked.");
     const result = formatAssistantErrorText(msg);
     expect(result).toContain("API authentication failed");
-    expect(result).toContain("revoked");
+    expect(result).toContain("/setkey");
   });
 
   it("returns a friendly message for generic auth errors", () => {
     const msg = makeAssistantError("401 Unauthorized: invalid token");
     const result = formatAssistantErrorText(msg);
     expect(result).toContain("API authentication failed");
-    expect(result).toContain("invalid or has expired");
+    expect(result).toContain("/setkey");
   });
 });
 
