@@ -12,8 +12,8 @@
 ## Быстрый старт
 
 ```bash
-git clone https://github.com/jeke8989/openclaw_fork.git
-cd openclaw_fork/deploy/openrouter-telegram
+git clone <YOUR_REPO_URL>
+cd <REPO_NAME>/deploy/openrouter-telegram
 ./setup.sh
 ```
 
