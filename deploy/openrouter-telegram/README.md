@@ -50,20 +50,23 @@ docker compose ps
 - Новые пользователи пишут `/start` боту
 - Админ получает уведомление и может одобрить/отклонить (dmPolicy: pairing)
 - Каждый пользователь имеет изолированную сессию
-- Модель по умолчанию: `anthropic/claude-sonnet-4-6` через OpenRouter
+- Модель по умолчанию: `minimax/minimax-m2.5` через OpenRouter
 
 ## Смена модели
 
 Отредактируй `data/openclaw.json`, поле `agents.defaults.model.primary`:
 
 ```
+openrouter/minimax/minimax-m2.5           # MiniMax M2.5 (default)
 openrouter/anthropic/claude-sonnet-4-6    # Claude Sonnet
 openrouter/anthropic/claude-opus-4-6      # Claude Opus
 openrouter/google/gemini-2.5-pro          # Gemini Pro
 openrouter/openai/gpt-4o                  # GPT-4o
 ```
 
-После смены: `docker compose restart`
+Или отправь боту название модели из OpenRouter — она автоматически будет применена.
+
+После ручной смены: `docker compose restart`
 
 ## Настройка бота
 

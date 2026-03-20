@@ -61,7 +61,7 @@ cat > data/openclaw.json << EOF
   "agents": {
     "defaults": {
       "model": {
-        "primary": "openrouter/anthropic/claude-sonnet-4-6"
+        "primary": "openrouter/minimax/minimax-m2.5"
       },
       "maxConcurrent": 4
     },
