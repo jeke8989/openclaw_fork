@@ -1,0 +1,22 @@
+services:
+  openclaw:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: openclaw-bot
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    volumes:
+      - ./data:/home/node/.openclaw
+    ports:
+      - "18789:18789"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:18789/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
