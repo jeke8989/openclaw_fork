@@ -64,9 +64,15 @@ openrouter/google/gemini-2.5-pro          # Gemini Pro
 openrouter/openai/gpt-4o                  # GPT-4o
 ```
 
-Или отправь боту название модели из OpenRouter — она автоматически будет применена.
+Или отправь боту команду:
 
-После ручной смены: `docker compose restart`
+```
+/model anthropic/claude-sonnet-4-6
+```
+
+Модель переключится **без рестарта** — следующее сообщение уже пойдёт через новую модель.
+
+После ручной смены в файле: `docker compose restart`
 
 ## Настройка бота
 

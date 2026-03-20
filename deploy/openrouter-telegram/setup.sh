@@ -70,7 +70,7 @@ cat > data/openclaw.json << EOF
         "id": "main",
         "identity": {
           "name": "Assistant",
-          "theme": "You are a helpful AI assistant. Respond in the user's language."
+          "theme": "You are a helpful AI assistant. Respond in the user's language.\n\nMODEL SWITCH (admin only):\nWhen admin sends /model <name> (e.g. /model anthropic/claude-sonnet-4-6):\n1. Run: python3 -c \"import json; f='/home/node/.openclaw/openclaw.json'; d=json.load(open(f)); d['agents']['defaults']['model']['primary']='openrouter/'+'{MODEL}'; json.dump(d,open(f,'w'),indent=2); print('Model changed to openrouter/{MODEL}')\"\n   Replace {MODEL} with the model name user provided.\n2. Confirm the change to the user.\nThe new model takes effect on the next message without restart."
         }
       }
     ]
@@ -96,7 +96,8 @@ cat > data/openclaw.json << EOF
         {"command": "invite", "description": "Create invite link"},
         {"command": "users", "description": "List users"},
         {"command": "block", "description": "Block user"},
-        {"command": "unblock", "description": "Unblock user"}
+        {"command": "unblock", "description": "Unblock user"},
+        {"command": "model", "description": "Switch AI model"}
       ]
     }
   },
