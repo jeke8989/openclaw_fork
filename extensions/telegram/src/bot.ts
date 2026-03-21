@@ -511,7 +511,8 @@ export function createTelegramBot(opts: TelegramBotOptions) {
       botUsername: "",
     });
 
-    // Start gateway health monitor with Telegram notifications to admin
+    // Start gateway health monitor with Telegram notifications to admin.
+    // Uses SIGUSR1 for in-process restart (bot runs inside gateway).
     gatewayHealthMonitor = startGatewayHealthMonitor({
       bot,
       ownerUserId: adminOwnerId,
@@ -519,7 +520,6 @@ export function createTelegramBot(opts: TelegramBotOptions) {
       gatewayPort: process.env.OPENCLAW_GATEWAY_PORT
         ? Number(process.env.OPENCLAW_GATEWAY_PORT)
         : undefined,
-      restartCommand: process.env.OPENCLAW_GATEWAY_RESTART_CMD,
       abortSignal: opts.fetchAbortSignal,
     });
   }

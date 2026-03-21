@@ -9,6 +9,7 @@ import { hostname } from "node:os";
 import { promisify } from "node:util";
 import type { Bot } from "grammy";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import { scheduleGatewaySigusr1Restart } from "../../../src/infra/restart.js";
 import { writeOAuthCredentials } from "../../../src/plugins/provider-auth-helpers.js";
 import {
   setAnthropicApiKey,
@@ -222,65 +223,25 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
     }
   });
 
-  // /gwrestart — force restart gateway
+  // /gwrestart — graceful in-process gateway restart via SIGUSR1.
+  // The bot runs inside the gateway, so we use SIGUSR1 which triggers:
+  // drain active work → stop channels → restart server → channels reconnect.
   bot.command("gwrestart", async (ctx) => {
     if (!isOwner(ctx)) {
       await ctx.reply("Только администратор может перезапускать gateway.");
       return;
     }
 
-    await ctx.reply(`⏳ *${gwHost}*\nПерезапускаю gateway...`, { parse_mode: "Markdown" });
+    await ctx.reply(
+      `⏳ *${gwHost}*\nОтправляю SIGUSR1 для graceful рестарта. Бот ненадолго отключится...`,
+      { parse_mode: "Markdown" },
+    );
 
-    const restartCmd =
-      process.env.OPENCLAW_GATEWAY_RESTART_CMD ??
-      [
-        // Kill via lsof (most reliable), then fuser as fallback
-        `lsof -nP -iTCP:${gwPort} -sTCP:LISTEN -t 2>/dev/null | xargs -r kill -9 2>/dev/null || true`,
-        `fuser -k ${gwPort}/tcp 2>/dev/null || true`,
-        `sleep 2`,
-        `nohup openclaw gateway run --bind loopback --port ${gwPort} --force > /tmp/openclaw-gateway.log 2>&1 &`,
-      ].join("; ");
-
-    try {
-      await execAsync(restartCmd, { timeout: 20000 });
-
-      // Poll until gateway is up (up to 10 seconds)
-      let up = false;
-      for (let i = 0; i < 5; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        if (await tcpProbe(gwPort)) {
-          up = true;
-          break;
-        }
-      }
-
-      if (up) {
-        await ctx.reply(`✅ *${gwHost}*\nGateway успешно перезапущен.`, {
-          parse_mode: "Markdown",
-        });
-      } else {
-        // Show last log lines to help diagnose
-        let logTail = "";
-        try {
-          const { stdout: logs } = await execAsync(
-            "tail -n 10 /tmp/openclaw-gateway.log 2>/dev/null",
-            { timeout: 3000 },
-          );
-          logTail = logs.trim();
-        } catch {
-          // ignore
-        }
-
-        const msg = [`❌ *${gwHost}*\nGateway не поднялся после рестарта.`];
-        if (logTail) {
-          msg.push(`\n\`\`\`\n${logTail.slice(-1500)}\n\`\`\``);
-        }
-        await ctx.reply(msg.join(""), { parse_mode: "Markdown" });
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      await ctx.reply(`❌ Ошибка перезапуска: ${message}`);
-    }
+    // Small delay so the Telegram message gets delivered before restart begins
+    scheduleGatewaySigusr1Restart({
+      reason: "admin /gwrestart command",
+      delayMs: 2000,
+    });
   });
 
   // /logs [N] — show last N lines of gateway log (default: 30)
