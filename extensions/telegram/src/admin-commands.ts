@@ -4,6 +4,7 @@
  * All user-facing messages in Russian.
  */
 import { exec } from "node:child_process";
+import net from "node:net";
 import { hostname } from "node:os";
 import { promisify } from "node:util";
 import type { Bot } from "grammy";
@@ -20,6 +21,27 @@ import {
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 
 const execAsync = promisify(exec);
+
+/** TCP connect probe — works without root, no ss/netstat needed. */
+function tcpProbe(port: number, host = "127.0.0.1", timeoutMs = 3000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve(false);
+    }, timeoutMs);
+    socket.connect(port, host, () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on("error", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
 
 export interface AdminCommandsParams {
   bot: Bot;
@@ -183,49 +205,15 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
     }
 
     try {
-      const portCheck = await execAsync(
-        `ss -tlnp 2>/dev/null | grep ':${gwPort}' || echo "NOT_LISTENING"`,
-        { timeout: 5000 },
-      );
-      const listening = !portCheck.stdout.includes("NOT_LISTENING");
+      const listening = await tcpProbe(gwPort);
 
-      let uptimeStr = "";
-      try {
-        const { stdout: uptime } = await execAsync("uptime -p 2>/dev/null || uptime", {
-          timeout: 3000,
-        });
-        uptimeStr = uptime.trim();
-      } catch {
-        // ignore
-      }
-
-      let memStr = "";
-      try {
-        const { stdout: mem } = await execAsync(
-          "free -h 2>/dev/null | awk '/^Mem:/{print $3\"/\"$2}'",
-          { timeout: 3000 },
-        );
-        memStr = mem.trim();
-      } catch {
-        // ignore
-      }
-
-      let diskStr = "";
-      try {
-        const { stdout: disk } = await execAsync(
-          'df -h / 2>/dev/null | awk \'NR==2{print $3"/"$2" ("$5" used)"}\'',
-          { timeout: 3000 },
-        );
-        diskStr = disk.trim();
-      } catch {
-        // ignore
-      }
+      const sysInfo = await collectSystemInfo();
 
       const status = listening ? "✅ Работает" : "❌ Не отвечает";
       const lines = [`*${gwHost}* — Gateway`, `Статус: ${status} (порт ${gwPort})`];
-      if (uptimeStr) lines.push(`Аптайм: ${uptimeStr}`);
-      if (memStr) lines.push(`Память: ${memStr}`);
-      if (diskStr) lines.push(`Диск: ${diskStr}`);
+      if (sysInfo.uptime) lines.push(`Аптайм: ${sysInfo.uptime}`);
+      if (sysInfo.memory) lines.push(`Память: ${sysInfo.memory}`);
+      if (sysInfo.disk) lines.push(`Диск: ${sysInfo.disk}`);
 
       await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
     } catch (err) {
@@ -245,26 +233,47 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
 
     const restartCmd =
       process.env.OPENCLAW_GATEWAY_RESTART_CMD ??
-      `pkill -9 -f openclaw-gateway 2>/dev/null; sleep 1; nohup openclaw gateway run --bind loopback --port ${gwPort} --force > /tmp/openclaw-gateway.log 2>&1 &`;
+      [
+        `fuser -k ${gwPort}/tcp 2>/dev/null || true`,
+        `sleep 2`,
+        `nohup openclaw gateway run --bind loopback --port ${gwPort} --force > /tmp/openclaw-gateway.log 2>&1 &`,
+      ].join("; ");
 
     try {
-      await execAsync(restartCmd, { timeout: 15000 });
-      // Wait for gateway to start
-      await new Promise((r) => setTimeout(r, 4000));
+      await execAsync(restartCmd, { timeout: 20000 });
 
-      const { stdout } = await execAsync(
-        `ss -tlnp 2>/dev/null | grep -q ':${gwPort}' && echo ok || echo fail`,
-        { timeout: 5000 },
-      );
+      // Poll until gateway is up (up to 10 seconds)
+      let up = false;
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (await tcpProbe(gwPort)) {
+          up = true;
+          break;
+        }
+      }
 
-      if (stdout.trim() === "ok") {
+      if (up) {
         await ctx.reply(`✅ *${gwHost}*\nGateway успешно перезапущен.`, {
           parse_mode: "Markdown",
         });
       } else {
-        await ctx.reply(`❌ *${gwHost}*\nGateway не поднялся после рестарта. Проверьте /logs`, {
-          parse_mode: "Markdown",
-        });
+        // Show last log lines to help diagnose
+        let logTail = "";
+        try {
+          const { stdout: logs } = await execAsync(
+            "tail -n 10 /tmp/openclaw-gateway.log 2>/dev/null",
+            { timeout: 3000 },
+          );
+          logTail = logs.trim();
+        } catch {
+          // ignore
+        }
+
+        const msg = [`❌ *${gwHost}*\nGateway не поднялся после рестарта.`];
+        if (logTail) {
+          msg.push(`\n\`\`\`\n${logTail.slice(-1500)}\n\`\`\``);
+        }
+        await ctx.reply(msg.join(""), { parse_mode: "Markdown" });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -319,6 +328,36 @@ const PROVIDER_KEY_SETTERS: Record<string, (key: string) => void | Promise<void>
 
 /** Providers that support OAuth token flow. */
 const OAUTH_PROVIDERS = new Set(["anthropic", "openai"]);
+
+async function collectSystemInfo(): Promise<{ uptime: string; memory: string; disk: string }> {
+  let uptime = "";
+  let memory = "";
+  let disk = "";
+  try {
+    const { stdout } = await execAsync("uptime -p 2>/dev/null || uptime", { timeout: 3000 });
+    uptime = stdout.trim();
+  } catch {
+    // ignore
+  }
+  try {
+    const { stdout } = await execAsync(`free -h 2>/dev/null | awk '/^Mem:/{print $3"/"$2}'`, {
+      timeout: 3000,
+    });
+    memory = stdout.trim();
+  } catch {
+    // ignore
+  }
+  try {
+    const { stdout } = await execAsync(
+      `df -h / 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5" used)"}'`,
+      { timeout: 3000 },
+    );
+    disk = stdout.trim();
+  } catch {
+    // ignore
+  }
+  return { uptime, memory, disk };
+}
 
 function getHostname(): string {
   try {
