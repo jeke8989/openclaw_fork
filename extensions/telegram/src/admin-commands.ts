@@ -234,6 +234,8 @@ export function registerAdminCommands(params: AdminCommandsParams): void {
     const restartCmd =
       process.env.OPENCLAW_GATEWAY_RESTART_CMD ??
       [
+        // Kill via lsof (most reliable), then fuser as fallback
+        `lsof -nP -iTCP:${gwPort} -sTCP:LISTEN -t 2>/dev/null | xargs -r kill -9 2>/dev/null || true`,
         `fuser -k ${gwPort}/tcp 2>/dev/null || true`,
         `sleep 2`,
         `nohup openclaw gateway run --bind loopback --port ${gwPort} --force > /tmp/openclaw-gateway.log 2>&1 &`,

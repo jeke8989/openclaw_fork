@@ -1,7 +1,7 @@
 /**
  * Gateway health monitor for Telegram bot.
- * Periodically checks gateway availability, attempts auto-restart,
- * and notifies the admin via Telegram.
+ * Periodically checks gateway availability via TCP probe,
+ * attempts auto-restart on failure, and notifies admin via Telegram.
  * All user-facing messages in Russian.
  */
 import { exec } from "node:child_process";
@@ -15,7 +15,8 @@ const execAsync = promisify(exec);
 
 const DEFAULT_CHECK_INTERVAL_MS = 60_000;
 const DEFAULT_GATEWAY_PORT = 18789;
-const MAX_RESTART_ATTEMPTS = 3;
+// After all restart attempts fail, wait this long before trying again.
+const RETRY_COOLDOWN_MS = 10 * 60_000;
 
 export interface GatewayHealthMonitorParams {
   bot: Bot;
@@ -26,13 +27,6 @@ export interface GatewayHealthMonitorParams {
   restartCommand?: string;
   abortSignal?: AbortSignal;
 }
-
-type MonitorState = {
-  healthy: boolean;
-  consecutiveFailures: number;
-  restartAttempts: number;
-  lastNotifiedAt: number;
-};
 
 /** TCP connect probe — works without root and without ss/netstat. */
 function tcpProbe(port: number, host = "127.0.0.1", timeoutMs = 3000): Promise<boolean> {
@@ -55,59 +49,35 @@ function tcpProbe(port: number, host = "127.0.0.1", timeoutMs = 3000): Promise<b
   });
 }
 
+/**
+ * Monitor states:
+ * - "healthy": gateway is responding
+ * - "suspect": first failure detected, waiting to confirm
+ * - "restarting": actively trying to restart
+ * - "failed": all restart attempts exhausted, in cooldown
+ */
+type Phase = "healthy" | "suspect" | "restarting" | "failed";
+
 export function startGatewayHealthMonitor(params: GatewayHealthMonitorParams): {
   stop: () => void;
 } {
   const {
     bot,
     ownerUserId,
-    gatewayHost = "localhost",
     gatewayPort = DEFAULT_GATEWAY_PORT,
     checkIntervalMs = DEFAULT_CHECK_INTERVAL_MS,
     restartCommand,
     abortSignal,
   } = params;
 
-  const state: MonitorState = {
-    healthy: true,
-    consecutiveFailures: 0,
-    restartAttempts: 0,
-    lastNotifiedAt: 0,
-  };
-
+  let phase: Phase = "healthy";
+  let failedSince = 0;
+  let lastRestartAttemptAt = 0;
   let timer: ReturnType<typeof setInterval> | null = null;
+  // Guard against overlapping checks (restart takes time)
+  let checking = false;
 
-  const displayHost =
-    gatewayHost === "localhost" || gatewayHost === "127.0.0.1" ? safeHostname() : gatewayHost;
-
-  async function checkHealth(): Promise<boolean> {
-    return tcpProbe(gatewayPort);
-  }
-
-  function buildRestartCommand(): string {
-    if (restartCommand) return restartCommand;
-    // Kill any existing openclaw gateway process, then start fresh.
-    // Process is "node ... openclaw gateway run" or "openclaw gateway run".
-    return [
-      `fuser -k ${gatewayPort}/tcp 2>/dev/null || true`,
-      `sleep 2`,
-      `nohup openclaw gateway run --bind loopback --port ${gatewayPort} --force > /tmp/openclaw-gateway.log 2>&1 &`,
-    ].join("; ");
-  }
-
-  async function attemptRestart(): Promise<boolean> {
-    try {
-      await execAsync(buildRestartCommand(), { timeout: 20000 });
-      // Wait for gateway to bind the port
-      for (let i = 0; i < 5; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        if (await checkHealth()) return true;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  }
+  const displayHost = resolveDisplayHost(params.gatewayHost);
 
   async function notifyAdmin(text: string): Promise<void> {
     try {
@@ -120,78 +90,135 @@ export function startGatewayHealthMonitor(params: GatewayHealthMonitorParams): {
     }
   }
 
-  async function runCheck(): Promise<void> {
-    const healthy = await checkHealth();
+  function buildKillCommand(): string {
+    // Use --force flag on openclaw gateway run, which internally uses lsof to
+    // find and kill stale listeners. As fallback, try lsof + kill manually.
+    return [
+      // Try lsof-based kill (works on most Linux)
+      `lsof -nP -iTCP:${gatewayPort} -sTCP:LISTEN -t 2>/dev/null | xargs -r kill -9 2>/dev/null || true`,
+      // Fallback: fuser
+      `fuser -k ${gatewayPort}/tcp 2>/dev/null || true`,
+    ].join("; ");
+  }
 
-    if (healthy) {
-      if (!state.healthy) {
-        await notifyAdmin(`✅ *${displayHost}*\nGateway восстановлен и работает.`);
-        state.healthy = true;
-        state.consecutiveFailures = 0;
-        state.restartAttempts = 0;
+  function buildRestartCommand(): string {
+    if (restartCommand) return restartCommand;
+    return [
+      buildKillCommand(),
+      `sleep 2`,
+      // --force handles any remaining stale locks/listeners
+      `nohup openclaw gateway run --bind loopback --port ${gatewayPort} --force > /tmp/openclaw-gateway.log 2>&1 &`,
+    ].join("; ");
+  }
+
+  async function attemptRestart(): Promise<boolean> {
+    try {
+      await execAsync(buildRestartCommand(), { timeout: 30000 });
+      // Poll up to 15 seconds for gateway to come up
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        if (await tcpProbe(gatewayPort)) return true;
       }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  async function getLogTail(): Promise<string> {
+    try {
+      const { stdout } = await execAsync("tail -n 15 /tmp/openclaw-gateway.log 2>/dev/null", {
+        timeout: 3000,
+      });
+      return stdout.trim();
+    } catch {
+      return "";
+    }
+  }
+
+  async function runCheck(): Promise<void> {
+    if (checking) return;
+    checking = true;
+    try {
+      await doCheck();
+    } finally {
+      checking = false;
+    }
+  }
+
+  async function doCheck(): Promise<void> {
+    const alive = await tcpProbe(gatewayPort);
+
+    // -- Gateway is up --
+    if (alive) {
+      if (phase !== "healthy") {
+        await notifyAdmin(`✅ *${displayHost}*\nGateway восстановлен и работает.`);
+      }
+      phase = "healthy";
+      failedSince = 0;
       return;
     }
 
-    state.consecutiveFailures++;
+    // -- Gateway is down --
+    const now = Date.now();
 
-    // First failure — could be transient
-    if (state.consecutiveFailures === 1) return;
+    switch (phase) {
+      case "healthy":
+        // First failure — might be transient, wait one more cycle
+        phase = "suspect";
+        failedSince = now;
+        return;
 
-    if (state.consecutiveFailures === 2) {
-      state.healthy = false;
-      await notifyAdmin(`⚠️ *${displayHost}*\nGateway не отвечает. Перезапускаю...`);
+      case "suspect": {
+        // Confirmed down — attempt restart
+        phase = "restarting";
+        await notifyAdmin(
+          `⚠️ *${displayHost}*\nGateway не отвечает (порт ${gatewayPort}). Перезапускаю...`,
+        );
 
-      for (let attempt = 0; attempt < MAX_RESTART_ATTEMPTS; attempt++) {
-        state.restartAttempts++;
         const recovered = await attemptRestart();
+        lastRestartAttemptAt = Date.now();
+
         if (recovered) {
           await notifyAdmin(`✅ *${displayHost}*\nGateway успешно перезапущен.`);
-          state.healthy = true;
-          state.consecutiveFailures = 0;
-          state.restartAttempts = 0;
-          return;
+          phase = "healthy";
+          failedSince = 0;
+        } else {
+          phase = "failed";
+          const logTail = await getLogTail();
+          const msg = [
+            `❌ *${displayHost}*\nGateway не удалось перезапустить.`,
+            `Следующая попытка через 10 мин.`,
+          ];
+          if (logTail) {
+            const t = logTail.length > 1500 ? `...${logTail.slice(-1500)}` : logTail;
+            msg.push("", `Логи:\n\`\`\`\n${t}\n\`\`\``);
+          }
+          await notifyAdmin(msg.join("\n"));
         }
+        return;
       }
 
-      // Failed to restart — get last log lines for diagnosis
-      let logTail = "";
-      try {
-        const { stdout } = await execAsync("tail -n 15 /tmp/openclaw-gateway.log 2>/dev/null", {
-          timeout: 3000,
-        });
-        logTail = stdout.trim();
-      } catch {
-        // ignore
-      }
+      case "restarting":
+        // Still in restart process (shouldn't happen due to `checking` guard)
+        return;
 
-      const msg = [
-        `⚠️ *${displayHost}* ❌`,
-        `Gateway НЕ восстановился! Требуется ручное вмешательство.`,
-      ];
-      if (logTail) {
-        const truncated = logTail.length > 1500 ? `...${logTail.slice(-1500)}` : logTail;
-        msg.push("", `Последние логи:\n\`\`\`\n${truncated}\n\`\`\``);
-      }
-      await notifyAdmin(msg.join("\n"));
-      return;
-    }
+      case "failed": {
+        // In cooldown — only retry after RETRY_COOLDOWN_MS
+        if (now - lastRestartAttemptAt < RETRY_COOLDOWN_MS) return;
 
-    // Ongoing failure — retry restart every 5 minutes
-    const now = Date.now();
-    if (now - state.lastNotifiedAt > 5 * 60_000) {
-      state.lastNotifiedAt = now;
-      // Try restart again
-      const recovered = await attemptRestart();
-      if (recovered) {
-        await notifyAdmin(`✅ *${displayHost}*\nGateway восстановлен после повторного рестарта.`);
-        state.healthy = true;
-        state.consecutiveFailures = 0;
-        state.restartAttempts = 0;
-      } else {
-        await notifyAdmin(
-          `⚠️ *${displayHost}*\nGateway по-прежнему недоступен (${state.consecutiveFailures} проверок). Последняя попытка рестарта не помогла.`,
-        );
+        // Try again silently (no spam)
+        const recovered = await attemptRestart();
+        lastRestartAttemptAt = Date.now();
+
+        if (recovered) {
+          await notifyAdmin(`✅ *${displayHost}*\nGateway восстановлен после повторного рестарта.`);
+          phase = "healthy";
+          failedSince = 0;
+        }
+        // If still failed — stay in "failed" phase, try again after next cooldown.
+        // No notification to avoid spam.
+        return;
       }
     }
   }
@@ -214,7 +241,10 @@ export function startGatewayHealthMonitor(params: GatewayHealthMonitorParams): {
   return { stop };
 }
 
-function safeHostname(): string {
+function resolveDisplayHost(gatewayHost?: string): string {
+  if (gatewayHost && gatewayHost !== "localhost" && gatewayHost !== "127.0.0.1") {
+    return gatewayHost;
+  }
   try {
     return hostname();
   } catch {
