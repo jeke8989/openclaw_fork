@@ -37,6 +37,7 @@ import {
 import { apiThrottler, Bot, sequentialize, type ApiClientOptions } from "./bot.runtime.js";
 import { buildTelegramGroupPeerId, resolveTelegramStreamMode } from "./bot/helpers.js";
 import { resolveTelegramTransport, type TelegramTransport } from "./fetch.js";
+import { startGatewayHealthMonitor } from "./gateway-health-monitor.js";
 import { tagTelegramNetworkError } from "./network-errors.js";
 import { createTelegramSendChatActionHandler } from "./sendchataction-401-backoff.js";
 import { getTelegramSequentialKey } from "./sequential-key.js";
@@ -494,11 +495,12 @@ export function createTelegramBot(opts: TelegramBotOptions) {
     telegramDeps,
   });
 
-  // Register admin commands (invite, users, block, unblock) before native commands
+  // Register admin commands (setkey, settoken) before native commands
   // Owner is the first entry in allowFrom config
   const configAllowFrom = telegramCfg.allowFrom ?? [];
   const adminOwnerId =
     configAllowFrom.length > 0 ? String(configAllowFrom[0]).replace(/^(telegram|tg):/i, "") : "";
+  let gatewayHealthMonitor: { stop: () => void } | undefined;
   if (adminOwnerId) {
     // bot.botInfo may not be available yet; pass empty and resolve lazily via ctx.me
     registerAdminCommands({
@@ -507,6 +509,18 @@ export function createTelegramBot(opts: TelegramBotOptions) {
       ownerUserId: adminOwnerId,
       accountId: account.accountId,
       botUsername: "",
+    });
+
+    // Start gateway health monitor with Telegram notifications to admin
+    gatewayHealthMonitor = startGatewayHealthMonitor({
+      bot,
+      ownerUserId: adminOwnerId,
+      gatewayHost: process.env.OPENCLAW_GATEWAY_HOST,
+      gatewayPort: process.env.OPENCLAW_GATEWAY_PORT
+        ? Number(process.env.OPENCLAW_GATEWAY_PORT)
+        : undefined,
+      restartCommand: process.env.OPENCLAW_GATEWAY_RESTART_CMD,
+      abortSignal: opts.fetchAbortSignal,
     });
   }
 
@@ -552,6 +566,7 @@ export function createTelegramBot(opts: TelegramBotOptions) {
 
   const originalStop = bot.stop.bind(bot);
   bot.stop = ((...args: Parameters<typeof originalStop>) => {
+    gatewayHealthMonitor?.stop();
     threadBindingManager?.stop();
     return originalStop(...args);
   }) as typeof bot.stop;
