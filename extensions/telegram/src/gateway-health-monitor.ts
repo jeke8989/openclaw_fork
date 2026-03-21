@@ -1,25 +1,25 @@
 /**
  * Gateway health monitor for Telegram bot.
  *
- * The Telegram bot runs INSIDE the gateway process. This means we cannot
- * kill-and-restart the gateway externally — that would kill the bot itself.
- * Instead, we use the gateway's built-in SIGUSR1 graceful restart mechanism:
- * the run-loop drains active work, stops channels, then restarts in-process.
- * The bot reconnects automatically after the restart cycle completes.
+ * The Telegram bot runs INSIDE the gateway process. This means:
+ * 1. If the bot can run a check, the gateway process is alive by definition.
+ * 2. We CANNOT auto-restart the gateway — it causes infinite restart loops.
+ *
+ * This monitor only sends notifications to the admin when the gateway RPC
+ * port stops responding. Auto-restart is intentionally NOT included.
+ * Use /gwrestart manually if needed.
  *
  * All user-facing messages in Russian.
  */
 import net from "node:net";
 import { hostname } from "node:os";
 import type { Bot } from "grammy";
-import { scheduleGatewaySigusr1Restart } from "../../../src/infra/restart.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 
-const DEFAULT_CHECK_INTERVAL_MS = 60_000;
+const DEFAULT_CHECK_INTERVAL_MS = 120_000;
 const DEFAULT_GATEWAY_PORT = 18789;
-// After SIGUSR1 restart, wait this long before checking again.
-// The gateway needs time to drain, restart, and re-bind the port.
-const POST_RESTART_COOLDOWN_MS = 90_000;
+// Don't send more than one "down" notification per this interval.
+const NOTIFICATION_COOLDOWN_MS = 30 * 60_000;
 
 export interface GatewayHealthMonitorParams {
   bot: Bot;
@@ -51,14 +51,6 @@ function tcpProbe(port: number, host = "127.0.0.1", timeoutMs = 3000): Promise<b
   });
 }
 
-/**
- * Monitor states:
- * - "healthy": gateway is responding normally
- * - "suspect": one failed check, waiting to confirm
- * - "restarting": SIGUSR1 sent, waiting for restart cycle to complete
- */
-type Phase = "healthy" | "suspect" | "restarting";
-
 export function startGatewayHealthMonitor(params: GatewayHealthMonitorParams): {
   stop: () => void;
 } {
@@ -70,8 +62,8 @@ export function startGatewayHealthMonitor(params: GatewayHealthMonitorParams): {
     abortSignal,
   } = params;
 
-  let phase: Phase = "healthy";
-  let restartRequestedAt = 0;
+  let wasHealthy = true;
+  let lastDownNotifiedAt = 0;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   const displayHost = resolveDisplayHost(params.gatewayHost);
@@ -83,69 +75,34 @@ export function startGatewayHealthMonitor(params: GatewayHealthMonitorParams): {
         fn: () => bot.api.sendMessage(Number(ownerUserId), text, { parse_mode: "Markdown" }),
       });
     } catch {
-      // Best-effort — bot may be mid-restart
+      // Best-effort
     }
   }
 
   async function doCheck(): Promise<void> {
+    const alive = await tcpProbe(gatewayPort);
     const now = Date.now();
 
-    // If we recently requested a restart, skip checks until cooldown expires.
-    // The gateway restart cycle (drain → stop channels → restart → rebind)
-    // takes time, and the bot itself will be stopped and restarted.
-    if (phase === "restarting") {
-      if (now - restartRequestedAt < POST_RESTART_COOLDOWN_MS) return;
-      // Cooldown expired — check if gateway came back
-      const alive = await tcpProbe(gatewayPort);
-      if (alive) {
-        phase = "healthy";
-        // Don't notify — the bot was restarted, so this is a fresh monitor instance.
-        // If we're still the same instance, the restart didn't fully cycle yet.
-      } else {
-        // Gateway still not up after cooldown — request another restart
-        restartRequestedAt = now;
-        await notifyAdmin(
-          `⚠️ *${displayHost}*\nGateway всё ещё недоступен после рестарта. Повторяю SIGUSR1...`,
-        );
-        scheduleGatewaySigusr1Restart({ reason: "health-monitor: still down after restart" });
-      }
-      return;
-    }
-
-    const alive = await tcpProbe(gatewayPort);
-
     if (alive) {
-      if (phase === "suspect") {
-        // Was suspect, now recovered — transient blip
-        phase = "healthy";
+      if (!wasHealthy) {
+        await notifyAdmin(`✅ *${displayHost}*\nGateway (порт ${gatewayPort}) снова отвечает.`);
+        wasHealthy = true;
       }
       return;
     }
 
-    // Gateway is not responding
-    if (phase === "healthy") {
-      // First failure — might be transient, wait one more cycle
-      phase = "suspect";
-      return;
+    // Port is not responding — notify (with cooldown to avoid spam)
+    if (wasHealthy || now - lastDownNotifiedAt > NOTIFICATION_COOLDOWN_MS) {
+      wasHealthy = false;
+      lastDownNotifiedAt = now;
+      await notifyAdmin(
+        [
+          `⚠️ *${displayHost}*`,
+          `Gateway не отвечает на порту ${gatewayPort}.`,
+          `Используйте /gwrestart для перезапуска.`,
+        ].join("\n"),
+      );
     }
-
-    // phase === "suspect": confirmed down after two consecutive failures
-    phase = "restarting";
-    restartRequestedAt = now;
-
-    await notifyAdmin(
-      `⚠️ *${displayHost}*\nGateway не отвечает (порт ${gatewayPort}). Отправляю SIGUSR1 для рестарта...`,
-    );
-
-    // Request graceful in-process restart. The run-loop will:
-    // 1. Drain active agent turns
-    // 2. Stop all channels (including this Telegram bot)
-    // 3. Restart the gateway server
-    // 4. Channels come back up with fresh bot + fresh health monitor
-    scheduleGatewaySigusr1Restart({
-      reason: "health-monitor: gateway port unresponsive",
-      delayMs: 2000,
-    });
   }
 
   function stop(): void {
